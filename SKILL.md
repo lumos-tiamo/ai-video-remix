@@ -65,11 +65,18 @@ POST {NEWAPI_URL}/v1/images/generations
 
 ### 这个集群不是看上去的样子
 
-`{COMFYUI_HOST}:{MASTER_PORT}` 加7个 worker 端口,是一套 **ComfyUI-Distributed** 部署(github.com/robertvoy/ComfyUI-Distributed),不是8台碰巧共享主机的独立 ComfyUI 服务器。它有一套真实的主从协议(`POST /distributed/queue`、通过 websocket 探测 worker 健康状态、自动给 worker 同步媒体文件)——但每个 worker 本身*同时也*是一个普通的 ComfyUI 实例,会直接接受裸的 `POST {worker}/prompt`,完全绕开这套协议。这样做安不安全,得看运气:在这个项目的历史上,直接给 worker 提交第一次是正常执行的,后来却跟这些 worker 之后反复卡住30分钟以上产生了关联,没有完全查清根因。**默认用只走 master、顺序执行的方式**(`scripts/gen_scene_master_only.py`)——这是两次完整生产跑下来唯一稳定可靠的方式。只有当只走 master 太慢、赶不上截止时间时才去碰真正的并行,如果要碰:对 `gen_scene_master_only.py` 里的 `run_scene()` 函数,每个场景对着不同的端口(它可选的第4个命令行参数)各起一个后台进程手动跑——这里故意没有写一个"一键并行"脚本,因为开发时踩的坑(超时设太短、graph构造的一个真实bug、master自身探测机制的一个真实故障)多到让我觉得包装成一键工具是不负责任的。如果还是要这么做:
+`{COMFYUI_HOST}:{MASTER_PORT}` 加7个 worker 端口,是一套 **ComfyUI-Distributed** 部署(github.com/robertvoy/ComfyUI-Distributed),不是8台碰巧共享主机的独立 ComfyUI 服务器。它有一套真实的主从协议(`POST /distributed/queue`、通过 websocket 探测 worker 健康状态、自动给 worker 同步媒体文件)——但每个 worker 本身*同时也*是一个普通的 ComfyUI 实例,会直接接受裸的 `POST {worker}/prompt`,完全绕开这套协议。
+
+### 三种生成模式,怎么选
+
+不要凭直觉猜,下面是实测+官方文档确认过的判断依据:
+
+1. **顺序、只走 master**(`scripts/gen_scene_master_only.py`,默认)——一个场景一个场景来,都走 master 端口。两次完整生产跑下来唯一从头到尾稳定可靠的方式。没有明确的时间压力、或者场景数量不多(≤3个左右)时,就用这个,不要为了"快"去冒下面两种模式的风险。
+2. **裸端口真并行**(`scripts/gen_scenes_parallel.py`)——绕开 `/distributed/queue`,直接给每个场景分配一个独立端口(master+7个worker共8个槽位),各自完全独立生成、各自存自己的文件,内部复用 `gen_scene_master_only.run_scene()`,一个场景失败不影响其他场景。**这是"N个不同场景各自独立提速"唯一对的工具**——用户明确赶时间、场景数够多(能填满多个端口)值得并行时用这个。已知风险:历史上个别 worker 偶尔卡住30分钟以上、根因没有完全查清;接受不了这个风险就退回模式1。
+3. **官方 `/distributed/queue` 协议**(`DistributedValue`/`DistributedSeed`/`DistributedCollector` 节点,`scripts/distributed_submit.py`)——**不要**把这个当成"给N个不同场景提速"的方案,实测+官方README(FAQ:"Does it speed up the generation of a single image or video? No.")都确认了:`DistributedCollector` 干的是"把N个participant的画面**合并**回master、拼成一条",服务的是"同一个场景、同样长度、换N个不同seed"这种等长变体场景,不是"N个内容/时长都不同的场景各自独立出片"——图里必须有 `DistributedCollector` 节点这套协议才会认(缺了它 `/distributed/queue` 会静默回退成只在master本地跑,返回 `worker_count: 0`,这是官方文档写明的行为,不是环境故障),而 `DistributedCollector` 的合并结果要拆回N个独立文件,还得再接一个 `Image Batch Divider` 节点按份数**硬平均**切分——前提是所有participant产出的帧数完全相等。真正适合这条路的场景是:用户明确想要"同一个镜头/同一个场景生成几个不同seed的候选版本、从里面挑一个最好的"(比稿、AB测试类需求),这时候每个participant长度天然相等,`Image Batch Divider` 能干净地切回N个独立候选文件。
 
 - 不要对一个端口上**正在跑任务**的时候调用 `POST /queue {"delete": [...]}`——在这套部署上实测会把那个正在跑的任务一起打断,不只是清掉排队中的任务。
-- 给任务留**足够长**的超时(2小时,不是30分钟)再判定它死了。这个集群上的并发负载会实实在在地拖慢每一个参与者(单独跑8分钟的任务,5个一起跑可能要35分钟以上)——这不等于卡死,对一个变慢但仍在真实运行的任务喊 `/interrupt`,等于把已经付出的真实 GPU 算力全部扔掉。真要判断之前,先用 `GET /system_stats`(显存占用是不是在真实变化,不是长期停在0)或者 `GET /history/{prompt_id}` 确认一下。
-- `POST /distributed/queue` 才是把*单个* workflow 分发给多个 worker 的正确方式(通过 `DistributedValue`/`DistributedSeed`/`DistributedCollector` 节点——`scripts/distributed_submit.py` 有一个完整可用的例子,包括怎么通过 `GET /distributed/config` 查到 worker 的真实 UUID)。开发过程中遇到过它自己的 worker 健康探测报告"0个活跃worker"、而实际上每个 worker 都能连通的情况——大概率是运行了很久的 master 进程自身连接池耗尽导致的。如果你请求了 worker 却看到 `worker_count: 0`,那是 master 进程本身的问题,不是你的请求写错了;重启 master 能清掉,但你大概率没有权限远程重启。
+- 给任务留**足够长**的超时(2小时,不是30分钟)再判定它死了。这个集群上的并发负载会实实在在地拖慢每一个参与者(单独跑8分钟的任务,5个一起跑可能要35分钟以上)——这不等于卡死,对一个变慢但仍在真实运行的任务喊 `/interrupt`,等于把已经付出的真实 GPU 算力全部扔掉。真要判断之前,先用 `GET /system_stats`(显存占用是不是在真实变化,不是长期停在0)或者 `GET /history/{prompt_id}` 确认一下。这条对模式2、模式3都适用。
 
 ### 帧数长度限制
 
@@ -81,7 +88,7 @@ POST {NEWAPI_URL}/v1/images/generations
 
 `MiniMaxH3ImageToVideo` 的 `first_frame` 和 `last_frame` 是**可选的 IMAGE 类型输入**——先用 `GET /object_info/MiniMaxH3ImageToVideo` 查它当前的真实 schema,不要凭假设写字段名;节点 schema 在不同部署之间会有差异。对一个"链接型"输入传一个裸文件名字符串而不是 `[node_id, output_slot]` 这样的链接,会报 `400`,而且只有读 `urllib.error.HTTPError.read()` 里的响应体才能看懂是哪里错了,单看异常信息看不出来。
 
-`scripts/gen_scene_master_only.py <场景号> <A段长度> <B段长度> <端口>` 处理了单个场景的整条链路(提交→等待→抽帧→上传→提交B段→拼接→写回结果);除非你已经读过上面这一节、并且是有意要并行,否则就一个场景一个场景顺序跑,都走 master 端口。
+`scripts/gen_scene_master_only.py <scenes.json> <image_dir> <video_dir> [端口,默认master]` 处理了单个场景的整条链路(提交→等待→抽帧→上传→提交B段→拼接→写回结果),`__main__` 会遍历 `scenes.json` 里所有还没有 `video_path` 的场景顺序生成——这是模式1(默认)。要并行(模式2),按上面"三种生成模式,怎么选"的判断依据,用 `scripts/gen_scenes_parallel.py <scenes.json> <image_dir> <video_dir> [场景号,逗号分隔,默认全部]`,它按端口数分批并行调用同一个 `run_scene()`,不要自己另起炉灶重新实现一遍提交/等待/拼接逻辑。
 
 ## 阶段4 —— PalmierPro 装配
 

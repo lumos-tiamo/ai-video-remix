@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
-"""Worked example of the *correct* ComfyUI-Distributed protocol: one
-workflow, submitted once to the master, fanning out a DIFFERENT scene to
-each participant via DistributedValue nodes -- not N raw /prompt POSTs to N
-worker ports. See SKILL.md's Stage 3 section before using this: it got the
-request right in development but hit an environment-specific bug (the
-master's own worker health-probe reported 0 active workers due to what
-looked like connection-pool exhaustion in a master process that had been up
-for a long time) that no amount of correct request-building fixes. Confirm
-`GET {master}/distributed/config` shows your workers as `enabled: true` and
-that a fresh probe isn't returning 0 before relying on this for real work.
+"""Worked example of the official ComfyUI-Distributed protocol (POST
+/distributed/queue + DistributedValue/DistributedCollector), NOT a tool for
+speeding up multi-scene generation -- see SKILL.md's Stage 3 "三种生成模式,
+怎么选" before using this. Confirmed live (2-scene test) and in the plugin's
+own docs/README: without a DistributedCollector node present, the endpoint
+silently falls back to local-only execution and reports worker_count: 0
+(not an environment fault -- earlier revisions of this docstring guessed a
+connection-pool-exhaustion bug in the master's health probe; that was wrong).
+With DistributedCollector present, each participant's image batch is
+COLLECTED (concatenated) back onto the master and only the master continues
+past it -- confirmed by inspecting each participant's own queued graph via
+GET /queue: workers never receive the downstream CreateVideo/SaveVideo
+nodes. That means this script, as written below, does NOT produce N
+separate per-scene files despite giving each position its own PFX -- the
+non-default positions' PFX is silently discarded and everything lands in
+ONE merged video under position 0's filename. This protocol is only a
+clean fit when every participant renders the SAME length (e.g. N seed
+variants of one scene), where an Image Batch Divider after the Collector
+can split the merged batch back into N equal, independent files. For our
+actual case -- N different scenes with different lengths -- use
+gen_scenes_parallel.py instead, which bypasses this protocol entirely.
 
 Usage: distributed_submit.py <scenes.json> <image_dir> <scene_num>[,<scene_num>...]
 Assigns scenes to master + first N-1 enabled workers, in order.
@@ -61,7 +72,8 @@ def build_graph(scenes_by_position, first_frame_names_by_position=None):
                                                      "positive": ["5", 0], "negative": ["6", 0],
                                                      "latent_image": ["5", 1], "denoise": 1.0}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}},
-        "9": {"class_type": "CreateVideo", "inputs": {"images": ["8", 0], "fps": 24.0}},
+        "COL": {"class_type": "DistributedCollector", "inputs": {"images": ["8", 0], "load_balance": False}},
+        "9": {"class_type": "CreateVideo", "inputs": {"images": ["COL", 0], "fps": 24.0}},
         "10": {"class_type": "SaveVideo", "inputs": {"video": ["9", 0], "filename_prefix": ["PFX", 0], "format": "auto", "codec": "auto"}},
     }
     node5 = {"clip": ["2", 0], "vae": ["3", 0], "prompt": ["P", 0], "width": 1088, "height": 1920, "length": ["LEN", 0]}
