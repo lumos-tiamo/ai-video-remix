@@ -14,6 +14,14 @@ best" (optionally split back into N separate files with Image Batch
 Divider), not for "N different scenes, each its own file" -- that's what
 this script is for.
 
+Scheduling: before every dispatch we scan each port's *live* ComfyUI queue
+(GET /queue) rather than trusting what this process itself assigned --
+other projects on this machine submit to the same 8 ports, so a port this
+script thinks is "busy" may already be idle, and vice versa. Each finished
+scene immediately frees its port and triggers a rescan, instead of waiting
+for an entire same-sized batch to clear (the old lockstep-batch scheduler
+let fast ports sit idle behind one slow scene).
+
 Known risk (see SKILL.md Stage 3): in prior production runs, individual
 workers have occasionally hung 30+ minutes with root cause not fully
 identified. A scene that doesn't complete is logged as FAILED and left
@@ -24,32 +32,59 @@ that already succeeded and only retry the failed ones.
 import concurrent.futures, json, os, sys, time
 import config
 import gen_scene_master_only as gsmo
+import comfy_client as cc
 
-def run_batch(scenes, image_dir, video_dir, ports, log):
-    results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(scenes)) as ex:
-        futures = {ex.submit(gsmo.run_scene, sc, image_dir, video_dir, port, log): sc["scene"]
-                   for sc, port in zip(scenes, ports)}
-        for fut in concurrent.futures.as_completed(futures):
-            n = futures[fut]
-            try:
-                results[n] = fut.result()
-            except Exception as e:
-                log(f"scene{n}: FAILED: {e}")
-    return results
+def pick_idle_port(ports, claimed, log):
+    """Scan the live queue depth of every port not already claimed by this
+    run and return the shallowest one. A port that fails to respond is
+    treated as busy (a hung worker is not a fast lane) and logged, so a
+    hang is visible instead of silently masked."""
+    depths = {}
+    for p in (p for p in ports if p not in claimed):
+        try:
+            depths[p] = cc.get_queue_depth(p)
+        except Exception as e:
+            log(f"port {p}: queue scan failed, treating as busy: {e}")
+    if not depths:
+        return None
+    return min(depths, key=depths.get)
 
 def run_all(scenes_path, image_dir, video_dir, scene_nums, log):
     scenes = json.load(open(scenes_path))
     by_num = {s["scene"]: s for s in scenes}
     ports = config.ALL_PORTS
     pending = [n for n in scene_nums if not by_num[n].get("video_path")]
-    for i in range(0, len(pending), len(ports)):
-        batch_nums = pending[i:i + len(ports)]
-        batch = [by_num[n] for n in batch_nums]
-        batch_ports = ports[:len(batch)]
-        log(f"batch {i // len(ports) + 1}: scenes {batch_nums} on ports {batch_ports}")
-        run_batch(batch, image_dir, video_dir, batch_ports, log)
-        json.dump(scenes, open(scenes_path, "w"), indent=2, ensure_ascii=False)
+    claimed = set()
+    in_flight = {}
+
+    def fill(ex):
+        while pending and len(in_flight) < len(ports):
+            port = pick_idle_port(ports, claimed, log)
+            if port is None:
+                if in_flight:
+                    return
+                log("all ports currently busy (likely another process) -- waiting to rescan")
+                time.sleep(10)
+                continue
+            n = pending.pop(0)
+            claimed.add(port)
+            log(f"scene{n}: dispatching to port {port} (idlest of {ports}, {len(pending)} left)")
+            fut = ex.submit(gsmo.run_scene, by_num[n], image_dir, video_dir, port, log)
+            in_flight[fut] = (n, port)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ports)) as ex:
+        fill(ex)
+        while in_flight:
+            done, _ = concurrent.futures.wait(in_flight, return_when=concurrent.futures.FIRST_COMPLETED)
+            for fut in done:
+                n, port = in_flight.pop(fut)
+                try:
+                    fut.result()
+                except Exception as e:
+                    log(f"scene{n}: FAILED: {e}")
+                claimed.discard(port)
+                json.dump(scenes, open(scenes_path, "w"), indent=2, ensure_ascii=False)
+            fill(ex)
     log("all scenes attempted")
 
 if __name__ == "__main__":

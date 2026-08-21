@@ -11,6 +11,14 @@ def http_get(port, path, timeout=10):
     with urllib.request.urlopen(host(port) + path, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
+def get_queue_depth(port, timeout=5):
+    """Live count of what a port is actually doing right now (running +
+    pending in ComfyUI's own queue) -- the only ground truth for idle vs
+    busy, since other processes on this machine submit to these same
+    ports too and this client has no other way to see that."""
+    q = http_get(port, "/queue", timeout=timeout)
+    return len(q.get("queue_running", [])) + len(q.get("queue_pending", []))
+
 def http_post_json(port, path, payload, timeout=15):
     req = urllib.request.Request(host(port) + path, data=json.dumps(payload).encode(),
                                   headers={"Content-Type": "application/json"})
