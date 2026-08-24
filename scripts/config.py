@@ -31,6 +31,13 @@ MASTER_PORT = int(_ENV.get("COMFYUI_MASTER_PORT", "8188"))
 WORKER_PORTS = [int(p) for p in _ENV.get("COMFYUI_WORKER_PORTS", "").split(",") if p.strip()]
 ALL_PORTS = [MASTER_PORT] + WORKER_PORTS
 
+# Default is conservative, not len(ALL_PORTS): the 8 ports are independent
+# ComfyUI queues but have been observed sharing one real GPU (and possibly
+# other tenants on a rented host) -- a scene has OOM'd even running totally
+# alone, so "queue is empty" does not mean "GPU has room." Raise via env
+# once you've confirmed this deployment's ports are truly GPU-isolated.
+MAX_CONCURRENT = int(_ENV.get("COMFYUI_MAX_CONCURRENT", "3"))
+
 if not NEWAPI_KEY or not COMFYUI_HOST:
     raise RuntimeError(
         "Missing NEWAPI_KEY/COMFYUI_HOST -- copy .env.example to .env in the project "

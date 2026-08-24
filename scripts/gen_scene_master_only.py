@@ -11,6 +11,8 @@ import config
 import comfy_client as cc
 
 SAFE_MAX_FRAMES = 260
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 30
 
 def run_one(port, prompt_text, length, filename_prefix, seed, first_frame_name, out_path, log, label):
     graph = cc.make_graph(prompt_text, length, filename_prefix, seed, first_frame_name=first_frame_name)
@@ -21,6 +23,23 @@ def run_one(port, prompt_text, length, filename_prefix, seed, first_frame_name, 
     cc.wait_and_download(port, pid, out_path, log, label)
 
 def run_scene(scene, image_dir, video_dir, port, log):
+    """Retries the whole scene (re-uploads, re-submits, same deterministic
+    seed) on OOM/interrupt/timeout -- the transient errors actually seen in
+    production, all self-clearing on a shared host. Anything else raises on
+    the first attempt; retrying a real bug just wastes 3x the time finding
+    out it's still broken."""
+    n = scene["scene"]
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return _run_scene_once(scene, image_dir, video_dir, port, log)
+        except Exception as e:
+            if attempt == RETRY_ATTEMPTS or not cc.is_transient_error(e):
+                raise
+            log(f"scene{n}: attempt {attempt}/{RETRY_ATTEMPTS} hit a transient error, "
+                f"retrying in {RETRY_BACKOFF_SECONDS}s: {e}")
+            time.sleep(RETRY_BACKOFF_SECONDS)
+
+def _run_scene_once(scene, image_dir, video_dir, port, log):
     n = scene["scene"]
     target_frames = round(scene["tts_duration"] * 24)
     ref_image_path = f"{image_dir}/scene{n:02d}.png"

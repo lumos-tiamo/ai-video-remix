@@ -11,6 +11,16 @@ def http_get(port, path, timeout=10):
     with urllib.request.urlopen(host(port) + path, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
+TRANSIENT_ERROR_MARKERS = ("OutOfMemoryError", "execution_interrupted", "timed out")
+
+def is_transient_error(exc):
+    """True for the error classes actually observed to clear up on their own:
+    GPU OOM on a shared/rented host (someone else's load can free up), a job
+    getting interrupted (worker-hang recovery), or a bare network timeout
+    under momentary host load. Everything else is treated as a real bug and
+    surfaced immediately instead of retried."""
+    return any(marker in str(exc) for marker in TRANSIENT_ERROR_MARKERS)
+
 def get_queue_depth(port, timeout=5):
     """Live count of what a port is actually doing right now (running +
     pending in ComfyUI's own queue) -- the only ground truth for idle vs

@@ -22,6 +22,14 @@ scene immediately frees its port and triggers a rescan, instead of waiting
 for an entire same-sized batch to clear (the old lockstep-batch scheduler
 let fast ports sit idle behind one slow scene).
 
+Concurrency is capped at config.MAX_CONCURRENT (default 3), not
+len(ports): a scene has OOM'd running completely alone at a frame count
+well under the documented safe ceiling, meaning the 8 ports don't have 8
+ports' worth of independent GPU headroom behind them. gen_scene_master_only
+.run_scene() itself retries OOM/interrupt/timeout with backoff, so a scene
+that fails this way gets a few staggered second chances before it's
+counted as a real failure.
+
 Known risk (see SKILL.md Stage 3): in prior production runs, individual
 workers have occasionally hung 30+ minutes with root cause not fully
 identified. A scene that doesn't complete is logged as FAILED and left
@@ -53,12 +61,13 @@ def run_all(scenes_path, image_dir, video_dir, scene_nums, log):
     scenes = json.load(open(scenes_path))
     by_num = {s["scene"]: s for s in scenes}
     ports = config.ALL_PORTS
+    max_concurrent = min(len(ports), config.MAX_CONCURRENT)
     pending = [n for n in scene_nums if not by_num[n].get("video_path")]
     claimed = set()
     in_flight = {}
 
     def fill(ex):
-        while pending and len(in_flight) < len(ports):
+        while pending and len(in_flight) < max_concurrent:
             port = pick_idle_port(ports, claimed, log)
             if port is None:
                 if in_flight:
@@ -68,11 +77,12 @@ def run_all(scenes_path, image_dir, video_dir, scene_nums, log):
                 continue
             n = pending.pop(0)
             claimed.add(port)
-            log(f"scene{n}: dispatching to port {port} (idlest of {ports}, {len(pending)} left)")
+            log(f"scene{n}: dispatching to port {port} (idlest of {ports}, "
+                f"{len(in_flight) + 1}/{max_concurrent} concurrent, {len(pending)} left)")
             fut = ex.submit(gsmo.run_scene, by_num[n], image_dir, video_dir, port, log)
             in_flight[fut] = (n, port)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ports)) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as ex:
         fill(ex)
         while in_flight:
             done, _ = concurrent.futures.wait(in_flight, return_when=concurrent.futures.FIRST_COMPLETED)
