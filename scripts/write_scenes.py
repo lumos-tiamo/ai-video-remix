@@ -44,6 +44,7 @@ if __name__ == "__main__":
         f"{config.NEWAPI_URL}/v1/chat/completions",
         data=json.dumps({
             "model": "claude-opus-4-8",
+            "max_tokens": 24000,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
@@ -51,11 +52,19 @@ if __name__ == "__main__":
         }).encode(),
         headers={"Authorization": f"Bearer {config.NEWAPI_KEY}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=600) as r:
         resp = json.loads(r.read().decode())
     content = resp["choices"][0]["message"]["content"].strip()
     if content.startswith("```"):
         content = content.split("\n", 1)[1].rsplit("```", 1)[0]
-    scenes = json.loads(content)
+    try:
+        scenes = json.loads(content)
+    except json.JSONDecodeError as e:
+        finish_reason = resp["choices"][0].get("finish_reason", "?")
+        raise SystemExit(
+            f"model output was not valid JSON (finish_reason={finish_reason}, "
+            f"{len(content)} chars received) -- likely truncated by a token limit. "
+            f"Original error: {e}"
+        )
     json.dump(scenes, open(out_path, "w"), indent=2, ensure_ascii=False)
     print(f"wrote {len(scenes)} scenes to {out_path}")

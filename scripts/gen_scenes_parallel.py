@@ -57,7 +57,7 @@ def pick_idle_port(ports, claimed, log):
         return None
     return min(depths, key=depths.get)
 
-def run_all(scenes_path, image_dir, video_dir, scene_nums, log):
+def run_all(scenes_path, image_dir, video_dir, scene_nums, log, width=1088, height=1920):
     scenes = json.load(open(scenes_path))
     by_num = {s["scene"]: s for s in scenes}
     ports = config.ALL_PORTS
@@ -79,7 +79,7 @@ def run_all(scenes_path, image_dir, video_dir, scene_nums, log):
             claimed.add(port)
             log(f"scene{n}: dispatching to port {port} (idlest of {ports}, "
                 f"{len(in_flight) + 1}/{max_concurrent} concurrent, {len(pending)} left)")
-            fut = ex.submit(gsmo.run_scene, by_num[n], image_dir, video_dir, port, log)
+            fut = ex.submit(gsmo.run_scene, by_num[n], image_dir, video_dir, port, log, width, height)
             in_flight[fut] = (n, port)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as ex:
@@ -107,9 +107,11 @@ if __name__ == "__main__":
         with open(log_path, "a") as f:
             f.write(line + "\n")
 
-    if len(sys.argv) > 4:
+    if len(sys.argv) > 4 and sys.argv[4]:
         scene_nums = [int(x) for x in sys.argv[4].split(",")]
     else:
         scene_nums = [s["scene"] for s in json.load(open(scenes_path))]
+    width = int(sys.argv[5]) if len(sys.argv) > 5 else 1088
+    height = int(sys.argv[6]) if len(sys.argv) > 6 else 1920
 
-    run_all(scenes_path, image_dir, video_dir, scene_nums, log)
+    run_all(scenes_path, image_dir, video_dir, scene_nums, log, width, height)
