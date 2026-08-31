@@ -68,15 +68,15 @@
 
 ---
 
-## Cats&Dogs —— 宠物喜剧二创(制作中,部分细节待验证)
+## Cats&Dogs —— 宠物喜剧二创
 
-竖屏 9:16,Disney/Pixar 风格3D CGI渲染,逆向还原短视频宠物喜剧(比如源素材"斗牛犬遛弯途中撂挑子"这类)。目前只做了第一支(`Cats&Dogs/1/`),阶段2首帧图基本生成完,还没跑到阶段3(scenes.json里所有场景都没有 `video_path`)——下面写的是已经在 `style.md`/`scenes.json` 里落地的部分,标了"待验证"的地方还没有真实跑通的证据,不要直接当成确定路径复用。
+竖屏 9:16,Disney/Pixar 风格3D CGI渲染,逆向还原短视频宠物喜剧(比如源素材"斗牛犬遛弯途中撂挑子"这类)。第一支(`Cats&Dogs/1/`,8个场景)已经跑完全部阶段3,8端口按队列深度分配、单场景独立生成(跟通用流程的模式2一致),没有出现需要特殊处理的失败。
 
 **角色一致性**:跟 AI女友 一样用轻量级 `persona.md` 文本块(单项目、不接 character_bible),把女主角和斗牛犬的外貌描述原样复制进每条 `image_prompt`。**这类内容天然是原创虚构角色**(源素材是真实宠物博主的狗,二创时明确换成全新的原创角色设计,不复用真实宠物的样貌),这一点在 style.md 里写得很清楚,跟"内容边界"一节里改编真实IP角色的处理原则是同一个思路的另一种应用——只是这次不是改编虚构反派或cosplay角色,而是改编真实宠物博主的宠物形象。
 
 **BGM**:这是目前唯一一个"源素材完全没有对白/旁白,靠纯视觉喜剧节奏 + 音乐卡点"的风格——`style.md` 明确写了"silent visual gag, no dialogue/narration in the source",配乐走 SKILL.md 阶段4 BGM 决策树里的第三种情况(正版曲库下载+ffmpeg混音),而且明确**不能**复用原视频自带的爆款配乐(版权风险),要换一首风格类似的新曲子——这一条项目自己已经在 style.md 里写清楚了要留 `.license.txt` sidecar,跟 SKILL.md 里"配乐来源要留痕"的要求完全对上。
 
-**单句台词的对口型尝试(仍待验证,但邻近技术已经在 AI ASMR 项目里跑通)**:整体哑剧基调里插了一个场景(scene 6)让女主角说一句"I give up.",做法是先用 edge-tts 生成这句台词、按精确帧数(124帧@24fps)补静音对齐成 `drive_audio`,准备喂给视频生成节点做对口型驱动。这条路径用到的节点(`MiniMaxH3AudioConditioningT8`)本身**已经确认真实存在且能跑通**——见下面 AI ASMR 一节,但那边验证的是 `audio_mode: "reference_only"`(音效对时机、内容由模型重新生成),不是"一字不差地把这句台词的具体内容对上口型"这种更严格的要求。这两者的差别很关键:Cats&Dogs 需要的是**内容锁定**(必须是"I give up."这几个字被说出来,不能被模型换成别的话),`reference_only` 模式明确写的是"不锁定复用内容"——大概率需要 `audio_mode` 的另一个取值,遇到这类需求先 `GET /object_info/MiniMaxH3AudioConditioningT8` 查完整取值列表,不要假设 `reference_only` 也能做到逐字精确。
+**单句台词的对口型(已验证)**:整体哑剧基调里插了一个场景(scene 6)让女主角说一句"I give up.",做法是先用 edge-tts 生成这句台词、按精确帧数(124帧@24fps=5.166667秒)补静音对齐成 `drive_audio`,再用 `MiniMaxH3AudioConditioningT8` 生成,关键参数是 `audio_mode: "lock_source"` + `audio_denoise_strength: 0.0`——这一档明确是"内容锁定",传入的音频原样保留,模型只负责让画面嘴型对上,不会像 `reference_only`(见下面 AI ASMR 一节)那样重新演绎声音内容。验证方式很扎实:生成视频抽出音轨重新过一遍 Whisper 转写,确认"I give up."这几个字完整没被模型改写,再配合抽帧肉眼核对嘴型动作,`scenes.json` 里这个场景的 `generation_path` 字段完整记录了这次调用的参数和验证方式,可以直接照抄这个模式。
 
 **场景衔接**:硬切,纯prompt文字连续性,跟大多数风格一样,不做像素级首尾帧衔接。**端口调度**:还没跑到阶段3,无数据。
 
@@ -92,4 +92,4 @@
 
 **端口调度**:`gen_scenes_audio_parallel.py` 复用了 `gen_scenes_parallel.py` 同一套 `pick_idle_port`(按 `/queue` 实时深度选端口)逻辑,支持全8端口并行,和其他项目共享同一个集群(空闲判断是扫描队列深度,不是看这个脚本自己分配了什么)。**场景衔接**:硬切,纯prompt文字连续性(同一套厨房场景描述在每个 `image_prompt` 里重复)。**BGM**:不需要额外配乐——每个场景的"配乐"就是联合生成出来的音效本身,阶段4装配时不需要再叠加音轨。
 
-**跟 Cats&Dogs 的关系**:两个项目都在探索用真实音频驱动生成,但需求不同——AI ASMR 要的是"音效跟动作对时机、内容不重要",`reference_only` 模式刚好够用;Cats&Dogs 要的是"这句台词必须一字不差地被说出来",需要的可能是同一个节点的另一个 `audio_mode` 取值,还没验证。遇到新的音频驱动类需求,先按这个区分判断自己属于哪一种,再决定要不要直接复用 `reference_only`。
+**跟 Cats&Dogs 的关系**:两个项目共用同一个节点(`MiniMaxH3AudioConditioningT8`),按需求分走了两档 `audio_mode`——AI ASMR 要的是"音效跟动作对时机、内容不重要",用 `reference_only`;Cats&Dogs 要的是"这句台词必须一字不差地被说出来",用 `lock_source`(`audio_denoise_strength: 0.0`,已在 Cats&Dogs 一节验证)。遇到新的音频驱动类需求,先判断音频内容能不能被模型重新演绎,能接受就 `reference_only`,不能接受就 `lock_source`。

@@ -19,8 +19,8 @@ description: 把一个源视频(二创/逆向还原)或一份原始素材/需求
 | **AI建筑** | 9:16,1088×1920 | 写实纪录片手持运镜,"造好了"系列 | 虚构建造者角色遮脸(帽檐/背身/侧脸)规避真人 | 正版音乐库(如Pixabay)下载后混音:ffmpeg `atrim`+`afade`淡出+音量ducking | **场景间抽取上一镜真实最后一帧做下一镜首帧,做全片一镜到底**(见下文) | `pick_idle_port`按实时队列深度选端口 |
 | **AI漫剧** | 16:9 | 半写实插画/YA漫画风格(可平行做photoreal变体) | 角色描述文字块手动复制进每条prompt,**未接入character_bible**(52-83场景规模下是个真实缺口) | 未发现BGM资产 | 纯prompt文字衔接 | 空闲端口轮询,大批量场景会从3并发爬升到8 |
 | **AI女友** | 9:16,1088×1920 | 写实人像,双主角配对照表 | `persona.md`文本块(比character_bible轻量,单项目够用) | 未发现独立BGM资产 | 纯prompt文字衔接 | 8端口,并发从3爬升到8 |
-| **宠物喜剧二创**(Cats&Dogs) | 9:16 | Disney/Pixar风3D CGI渲染 | `persona.md`文本块(单项目轻量模式) | 哑剧+外部曲库(不复用原TikTok配乐);个别场景插一句台词想对口型(**具体做法还没跑通,见下文AI ASMR的邻近技术**) | 硬切,纯prompt文字衔接 | 项目还没跑到阶段3,端口用法待观察 |
-| **AI ASMR** | 9:16,576×1024 | 写实特写,手部动作+厨房/手作场景 | 通用化处理(刻意不复刻源博主本人的手/美甲/戒指等可识别特征) | **`MiniMaxH3AudioConditioningT8`(`audio_mode: reference_only`)联合生成画面+音效,音效对时机不对内容**(见阶段3专门说明,已验证) | 硬切,纯prompt文字衔接 | 全8端口按队列深度分配(`gen_scenes_audio_parallel.py`) |
+| **宠物喜剧二创**(Cats&Dogs) | 9:16 | Disney/Pixar风3D CGI渲染 | `persona.md`文本块(单项目轻量模式) | 哑剧+外部曲库(不复用原TikTok配乐);个别场景插一句必须逐字保留的台词对口型,用 `MiniMaxH3AudioConditioningT8`(`audio_mode: lock_source`,已验证) | 硬切,纯prompt文字衔接 | 8端口按队列深度分配 |
+| **AI ASMR** | 9:16,576×1024 | 写实特写,手部动作+厨房/手作场景 | 通用化处理(刻意不复刻源博主本人的手/美甲/戒指等可识别特征) | `MiniMaxH3AudioConditioningT8`(`audio_mode: reference_only`)联合生成画面+音效,音效对时机不对内容(已验证) | 硬切,纯prompt文字衔接 | 全8端口按队列深度分配(`gen_scenes_audio_parallel.py`) |
 
 已验证风格的完整技术细节(具体脚本、参数、生产日志佐证)见 `references/style_playbooks.md`。**延时摄影(时间压缩镜头)目前只在 AI建筑 尝试过且没有做成功**——细节见下文阶段3专门一节,新需求如果要这个效果先看那一节,别重新踩一遍。
 
@@ -124,7 +124,11 @@ POST {NEWAPI_URL}/v1/images/generations
 - 不要对一个端口上**正在跑任务**的时候调用 `POST /queue {"delete": [...]}`——在这套部署上实测会把那个正在跑的任务一起打断,不只是清掉排队中的任务。
 - 给任务留**足够长**的超时(2小时,不是30分钟)再判定它死了。这个集群上的并发负载会实实在在地拖慢每一个参与者(单独跑8分钟的任务,5个一起跑可能要35分钟以上)——这不等于卡死,对一个变慢但仍在真实运行的任务喊 `/interrupt`,等于把已经付出的真实 GPU 算力全部扔掉。真要判断之前,先用 `GET /system_stats`(显存占用是不是在真实变化,不是长期停在0)或者 `GET /history/{prompt_id}` 确认一下。这条对模式2、模式3、模式4都适用。
 - **`MiniMaxH3ImageToVideo` 不是唯一可用的视频生成节点**——需要"生成画面里的人物按真实歌曲精确对口型"这类音频驱动需求时(AI女团MV风格),改用 `MiniMaxH3ReferenceToVideo`:把真实歌曲按每个镜头的歌词时间窗口(`lyric_window`)用 ffmpeg 切出对应的mp3片段,上传后接进 `LoadAudio`→`ref_audios`,提示词里显式引用为 `<Audio 1>`("is the real song audio for this shot -- X lip-syncs PRECISELY to the vocal line"),同一段音频同时也接进 `CreateVideo` 的 `audio` 输入,这样导出的 mp4 音画天然对齐,不需要后期再混音对轨。这条路径同时支持传多张参考图(角色定妆照+舞台背景图同时作为 `<Picture>` 输入)做身份锁定,是比"单张 first_frame"更强的一致性手段,代价是不再支持下面这套跨场景首尾帧衔接。具体的切片脚本和提示词模板见 `references/style_playbooks.md` 的 AI女团MV 一节。
-- **需要"画面里的动作要配上真实环境音/音效,但不需要逐字复刻源音频内容"时**(比如 ASMR 类:手部动作要跟咔嚓/挤压/倒液体这类音效精确对上时机,但音效本身是模型重新生成的,不是照搬源片段),用第三个节点家族:`MiniMaxH3AudioConditioningT8`(生成)+`MiniMaxH3AVDecodeT8`(联合解出音频+视频)+`CreateVideo`(把解出的 audio 一起打包进最终 mp4)。关键参数(已在真实生产里跑通、有量化验证:生成音频包络跟源片段相关系数约0.88,画面动作跟音频峰值肉眼对得上):`audio_mode: "reference_only"`(源音频只作为时机/风格参考,模型重新合成音频内容,不是锁定复用——这跟上面 AI女团MV 那条"精确对上真实歌曲的每一个字"是两回事,不能混用同一个 mode)、`add_source_as_reference: true`、`audio_denoise_strength: 0.35`(数值越低越贴近参考音频的具体声音特征,越高模型自由发挥越多,具体取值按需要试)、`reference_video_policy: "official_2_to_15s"`(参考音频/视频时长上限跟这个策略挂钩,单场景控制在15秒以内)。**`reference_only` 这个 mode 只验证过"环境音/音效跟画面动作对时机"这类场景,没有验证过"必须逐字对上一句具体台词的对口型"这类需求**(那是 Cats&Dogs 项目想做但还没跑通的东西)——如果需要后者,先用 `GET /object_info/MiniMaxH3AudioConditioningT8` 查一下 `audio_mode` 还有哪些可选值(大概率存在类似"锁定复用源内容"的另一档),不要假设 `reference_only` 也能做到逐字精确。
+- **需要"画面动作配上音效/声音,音频节奏要跟画面精确对上"时**,用第三个节点家族:`MiniMaxH3AudioConditioningT8`(生成)+`MiniMaxH3AVDecodeT8`(联合解出音频+视频)+`CreateVideo`(把解出的 audio 一起打包进最终 mp4)。核心是 `audio_mode` 这个参数,两档都已经在真实生产里跑通验证,按需求选:
+  - **`audio_mode: "reference_only"`**(ASMR类场景验证过):源音频只作为时机/风格参考,`audio_denoise_strength: 0.35`,模型重新合成音频内容,不锁定复用——适合"环境音/音效要跟画面动作对上时机,但声音内容本身可以由模型重新生成"(比如手部动作配咔嚓/挤压声),已量化验证:生成音频包络跟参考片段相关系数约0.88,画面动作跟音频峰值肉眼对得上。
+  - **`audio_mode: "lock_source"`**(单句台词对口型场景验证过):`audio_denoise_strength: 0.0`,音频内容被锁定,原样使用传入的 `drive_audio`(比如一段 TTS 生成的台词)——适合"这句话的具体内容必须原样保留、只是要让画面里的嘴型对上"这类需求。验证方式:生成视频抽出音轨重新过一遍 Whisper 转写,确认文字内容完整没有被模型"重新演绎",再配合抽帧肉眼过一遍嘴型。
+  
+  两者共用的参数:`add_source_as_reference: true`、`reference_video_policy: "official_2_to_15s"`(参考音频/单场景时长上限15秒)、`task_type: "auto"`。**`audio_denoise_strength` 是这两档的关键分野**——越接近0越锁定源内容(适合台词/需要保留原意的音频),越接近1模型自由发挥空间越大(适合氛围音效)。这个跟上面 AI女团MV 那条"歌曲逐字对口型"是完全不同的节点路径(`MiniMaxH3ReferenceToVideo` vs `MiniMaxH3AudioConditioningT8`),遇到新需求先判断这句/这段音频的内容能不能被模型重新演绎,能接受就用 `reference_only`,不能接受(必须逐字保留)就用 `lock_source`,不确定的话 `GET /object_info/MiniMaxH3AudioConditioningT8` 查完整参数取值范围确认。
 
 ### 跨场景衔接:要不要做到全片"一镜到底"
 
@@ -177,9 +181,11 @@ POST {NEWAPI_URL}/v1/images/generations
 2. **音乐视频类风格,歌曲本身就是内容主体(比如AI女团MV)**:这种情况下音乐不是"后期加上去的背景",而是要在阶段3生成视频之前就接进去——按每个镜头对应的歌词时间窗口(`lyric_window`,比如"10.5-14.5s"),用 `ffmpeg -ss <start> -t <dur>` 把完整歌曲切出这一镜专属的一段mp3,作为 `MiniMaxH3ReferenceToVideo` 的参考音频输入(见上一节),这样生成出来的画面本身就是按这段真实人声对口型/卡节拍生成的,导出时同一段音频直接进 `CreateVideo` 的 `audio` 输入,不需要额外混音。**这条路径找歌曲/生成歌曲本身依然是用户需要自己提供或者另外解决的事,这里只解决"拿到歌之后怎么接进流水线"**。
 3. **旁白解说类内容需要氛围配乐**(比如AI建筑这类纪录片感内容):从正版授权的免费音乐库(实测 Pixabay 的曲库可用,数量大、素材质量够用)下载一首风格匹配的曲目——**注意 Pixabay 有 Cloudflare 防护,`browse` 这类无头浏览器默认访问会被 403 拦掉,需要切到有头模式**(重置 `browse` daemon 配置、走真实浏览器交互点击下载按钮、从网络请求里抓真实的 CDN 直链)才能拿到文件。下载完成后,**把曲目页面URL和许可条款文字存一份 sidecar 文本文件放在音频文件旁边**(比如 `bgm_upbeat_acoustic.mp3` 配一份 `bgm_upbeat_acoustic.license.txt`)——此前有个项目下载完曲子就直接混音了,事后想找这首曲子的来源/许可证明,发现只有聊天记录里有,音频文件本身旁边什么都没留,这个习惯要改过来。混音用 ffmpeg 一次性做完淡出+音量衰减:`atrim=0:{total_duration},afade=t=out:st={total_duration-1.5}:d=1.5,volume=0.9`,跟每个场景的变速(`setpts`)、视频轨 `concat` 放在同一个 `filter_complex` 里一次编码输出(`libx264 crf 18` + `aac 192k`),不用先导出一版视频再单独混一遍音频。找不到风格匹配的免费曲目,或者版权判断拿不准,就转给用户自己提供曲目,不要凭感觉从网上随便下载一段来源不明的音乐替用户做这个决定。
 
-**第四种情况(部分已验证):环境音/音效需要跟画面动作精确对时机,但不需要逐字复刻源音频内容**(比如 ASMR 类内容——倒蜂蜜、捏黄油、摆鸡蛋这类手部特写,重点是咔嚓/挤压/倒液体的声音要跟手部动作严丝合缝,但声音本身可以是模型重新生成的,不用是源片段原声):从源片段里按场景切出对应时间段的真实音频作为参考(不是最终成片要用的音频,只是给模型当"这段时长里声音节奏长什么样"的参照),用 `MiniMaxH3AudioConditioningT8`(`audio_mode: "reference_only"`)联合生成画面和音频,细节见上面阶段3"`MiniMaxH3ImageToVideo` 不是唯一可用节点"一节。**这条路径已经在真实生产里跑通(生成音频包络跟参考音频相关系数约0.88,动作/音效峰值对得上),但只验证了"环境音效对时机"这一种用法**。
+**第四种情况(已验证,两档模式按需求选):画面动作要精确配上声音,用 `MiniMaxH3AudioConditioningT8` 联合生成画面+音频**,细节见上面阶段3"`MiniMaxH3ImageToVideo` 不是唯一可用节点"一节:
+- **声音内容不重要、只要时机对**(比如ASMR类倒蜂蜜/捏黄油的手部音效):`audio_mode: "reference_only"`,从源片段切出对应时间段音频当参考,模型重新合成音效内容。已量化验证(生成音频包络跟参考相关系数约0.88)。
+- **声音内容必须原样保留**(比如哑剧式喜剧里插一句必须逐字说出来的台词):`audio_mode: "lock_source"`,`audio_denoise_strength: 0.0`,传入 TTS 生成的台词音频当 `drive_audio`,模型只负责让画面嘴型对上,不会"重新演绎"内容。已验证方式:生成后把音轨重新过一遍 Whisper 转写确认文字没被改写,配合抽帧肉眼核对嘴型。
 
-另有一种更难的子情况还没跑通:整体是无对白的哑剧式喜剧(比如宠物喜剧二创),其中一两个场景想加一句台词并且要**逐字对上口型**——现在只做到了前期准备(TTS生成台词、按目标帧数精确补静音对齐时长,比如 124帧@24fps=5.166667秒),还没有验证 `MiniMaxH3AudioConditioningT8` 的 `reference_only` 模式(或者别的 `audio_mode` 取值)能不能撑住"内容必须逐字对上"这种更严格的要求——遇到这类需求时,先用 `GET /object_info/MiniMaxH3AudioConditioningT8` 确认 `audio_mode` 完整取值列表,不要直接假设 `reference_only` 能做到,跑通之后再回来把这条补充成正式路径。
+两档合起来覆盖了此前"想加一句台词对口型但不确定行不行"的空白——不用再犹豫,按上面的判断标准直接选对应的 `audio_mode` 就行。
 
 ## 阶段5 —— 导出
 
