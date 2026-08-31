@@ -118,7 +118,7 @@ POST {NEWAPI_URL}/v1/images/generations
 
 1. **顺序、只走 master**(`scripts/gen_scene_master_only.py`,默认)——一个场景一个场景来,都走 master 端口。两次完整生产跑下来唯一从头到尾稳定可靠的方式。没有明确的时间压力、或者场景数量不多(≤3个左右)时,就用这个,不要为了"快"去冒下面两种模式的风险。
 2. **裸端口真并行**(`scripts/gen_scenes_parallel.py`)——绕开 `/distributed/queue`,直接给每个场景分配一个独立端口(master+7个worker共8个槽位),各自完全独立生成、各自存自己的文件,内部复用 `gen_scene_master_only.run_scene()`,一个场景失败不影响其他场景。**这是"N个不同场景各自独立提速"唯一对的工具**——用户明确赶时间、场景数够多(能填满多个端口)值得并行时用这个。已知风险:历史上个别 worker 偶尔卡住30分钟以上、根因没有完全查清;接受不了这个风险就退回模式1。端口分配用 `pick_idle_port()`——实时查每个端口 `/queue` 的排队深度,分给当前最空闲的那个,不是简单轮询;探测不到状态的端口按"忙"处理,不会被误判成空闲。
-3. **官方 `/distributed/queue` 协议**(`DistributedValue`/`DistributedSeed`/`DistributedCollector` 节点,`scripts/distributed_submit.py`)——**不要**把这个当成"给N个不同场景提速"的方案,实测+官方README(FAQ:"Does it speed up the generation of a single image or video? No.")都确认了:`DistributedCollector` 干的是"把N个participant的画面**合并**回master、拼成一条",服务的是"同一个场景、同样长度、换N个不同seed"这种等长变体场景,不是"N个内容/时长都不同的场景各自独立出片"——图里必须有 `DistributedCollector` 节点这套协议才会认(缺了它 `/distributed/queue` 会静默回退成只在master本地跑,返回 `worker_count: 0`,这是官方文档写明的行为,不是环境故障),而 `DistributedCollector` 的合并结果要拆回N个独立文件,还得再接一个 `Image Batch Divider` 节点按份数**硬平均**切分——前提是所有participant产出的帧数完全相等。真正适合这条路的场景是:用户明确想要"同一个镜头/同一个场景生成几个不同seed的候选版本、从里面挑一个最好的"(比稿、AB测试类需求),这时候每个participant长度天然相等,`Image Batch Divider` 能干净地切回N个独立候选文件。
+3. **官方 `/distributed/queue` 协议**(`DistributedValue`/`DistributedSeed`/`DistributedCollector` 节点,`scripts/distributed_submit.py`)——**不要**把这个当成"给N个不同场景提速"的方案,实测+官方README(FAQ:"Does it speed up the generation of a single image or video? No.")都确认了:`DistributedCollector` 干的是"把N个participant的画面**合并**回master、拼成一条",服务的是"同一个场景、同样长度、换N个不同seed"这种等长变体场景,不是"N个内容/时长都不同的场景各自独立出片"——图里必须有 `DistributedCollector` 节点这套协议才会认(缺了它 `/distributed/queue` 会静默回退成只在master本地跑,返回 `worker_count: 0`,这是官方文档写明的行为,不是环境故障),而 `DistributedCollector` 的合并结果要拆回N个独立文件,还得再接一个 `Image Batch Divider` 节点按份数**硬平均**切分——前提是所有participant产出的帧数完全相等。真正适合这条路的场景是:用户明确想要"同一个镜头/同一个场景生成几个不同seed的候选版本、从里面挑一个最好的"(比稿、AB测试类需求),这时候每个participant长度天然相等,`Image Batch Divider` 能干净地切回N个独立候选文件。**但如果不需要自动合并、只是想要几个候选版本自己挑一个最好的,不必上这一整套协议**——直接照模式2的裸端口并行手法,把同一个场景配上不同 seed 分别提交到多个端口,各自独立下载成 `sceneNN_port<端口号>.mp4` 这样区分开的文件,人工(或截帧对比)挑一个最满意的即可,免掉 `DistributedCollector`+`Image Batch Divider`+等长约束这一整套复杂度——真实生产里就是这么做的(同一个场景配8个不同seed分别提交到全部8个端口)。
 4. **多个独立项目并发跑,每个项目各自绑定固定端口子集**——这不是"给同一个视频的N个场景提速",而是同时生产多条互不相关的视频时的调度方式:每个项目脚本接受一个端口(或一小组端口)作为参数,项目内部仍然顺序处理自己的场景,项目之间物理上跑在不同端口互不排队(比如4个AI女团MV项目同一晚各自绑 `8191/8194`、`8188/8189`、`8188/8192`、`8193/8195` 并发出片)。场景数不多、但同时有好几条不同视频要赶的时候用这个,比让它们全部挤模式1/2的同一个端口池排队快得多。
 
 - 不要对一个端口上**正在跑任务**的时候调用 `POST /queue {"delete": [...]}`——在这套部署上实测会把那个正在跑的任务一起打断,不只是清掉排队中的任务。
@@ -148,6 +148,8 @@ POST {NEWAPI_URL}/v1/images/generations
 ### 帧数长度限制
 
 `MiniMaxH3ImageToVideo` 的 `length` 参数接受最大 3600,但它*训练时*的范围文档写的是约124-362帧,实际测试中,单次生成调用在48GB显卡上超过大约 **280帧** 时会稳定地 OOM,哪怕这张卡完全空闲、只跑这一个任务——这是跟帧数绑定的真实单任务显存上限,不是排队造成的假象。280帧以内的场景:直接生成,把该场景阶段2的参考图设为 `first_frame`。需要更长的场景:拆成两段——
+
+**这条 280帧上限说的是单任务空闲时的上限,不代表8个端口同时跑同一个短场景就不会 OOM**——真实生产里遇到过:一个只有180帧(7.5秒)的场景,配8个不同seed同时提交到全部8个端口(上面"同一场景多候选,不必走官方协议"那条用法),8个里有2个直接 OOM 报错失败,其余6个正常跑完。原因是8个任务同时抢同一批物理GPU的显存,不是单任务的280帧上限被打破——**用"同一场景配多个候选"这个技巧时,预期会有一部分候选失败是正常的,不用因为个别端口 OOM 就怀疑帧数设置错了**,凑够想要的候选数量、或者接受少几个候选就行,不需要为了让全部候选都成功而反复重试。
 
 1. **A段**:长度 ≤260,用该场景阶段2的参考图作为 `first_frame`。
 2. 提取A段实际的最后一帧(`ffmpeg -sseof -1 -i partA.mp4 -update 1 -q:v 2 last.png`——这样才能可靠拿到真正的最后一帧,而不是近似定位),通过 `POST /upload/image` 上传(multipart,字段名是 `image`)。
