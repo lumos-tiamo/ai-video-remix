@@ -27,6 +27,7 @@ _ENV = load_env()
 NEWAPI_URL = _ENV.get("NEWAPI_URL", "").rstrip("/")
 NEWAPI_KEY = _ENV.get("NEWAPI_KEY", "")
 FISHAUDIO_KEY = _ENV.get("FISHAUDIO_KEY", "")  # optional -- only needed by gen_tts_fishaudio.py
+ELEVENLABS_KEY = _ENV.get("ELEVENLABS_KEY", "")  # optional -- only needed by gen_tts_elevenlabs.py
 
 # Dedicated gateway for Stage 2 image generation (gen_images.py) -- falls back to
 # NEWAPI_URL/NEWAPI_KEY when unset. Text writing, TTS, etc. always use NEWAPI_*

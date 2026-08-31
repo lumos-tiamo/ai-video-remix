@@ -2,7 +2,7 @@
 
 一个 [Claude Code](https://claude.com/claude-code) skill:把 (a) 一个想要二创/逆向还原的现有视频,或 (b) 一份想要原创改写的素材/需求,端到端做成一条装配好的竖屏(9:16)或横屏(16:9)AI 视频——文案+SRT提取、分镜提示词设计、首帧图生成、多场景 ComfyUI MiniMax-H3 集群视频生成、精确时间线装配,最终在 PalmierPro 里完成。
 
-**风格无关**:同一套骨架已经在六种不同风格的真实生产上跑通过——时事财经历史锐评(厚涂油画单主体)、AI女团MV(真实歌曲驱动口型同步)、IP吉祥物二创(角色自动核验)、纪录片式建造改造(全片一镜到底)、插画/YA剧情连载、恋爱人设短剧。拿到一个新风格的需求,先看 `SKILL.md` 开头的"风格速查表"对号入座,再看 `references/style_playbooks.md` 里对应那一节的具体做法——不需要从零摸索。
+**风格无关**:同一套骨架已经在多种不同风格的真实生产上跑通过——时事财经历史锐评(厚涂油画单主体)、AI女团MV(真实歌曲驱动口型同步)、IP吉祥物二创(角色自动核验)、纪录片式建造改造(全片一镜到底)、插画/YA剧情连载、恋爱人设短剧、宠物喜剧二创。拿到一个新风格的需求,先看 `SKILL.md` 开头的"风格速查表"对号入座,再看 `references/style_playbooks.md` 里对应那一节的具体做法——不需要从零摸索。
 
 在 Claude Code 里说"remix这个视频"、"把这段文案做成视频"、"照我们XX那套流程做个视频"之类的话,这个 skill 会自动触发。
 
@@ -60,7 +60,7 @@ COMFYUI_WORKER_PORTS=8189,8190,8191,8192,8193,8194,8195
 | 5. 导出 | 导出最终 mp4 | (palmier-pro MCP 工具) |
 | 6. (可选)HyperFrames 卡拉OK字幕 | 逐字高亮的硬烧录字幕,后处理叠加层 | `build_karaoke_transcript.py`, `gen_karaoke_composition.py`, `gen_word_timestamps_fallback.py` |
 
-**风格适配**:阶段1-5的骨架对任何风格通用,真正因风格而变的是画幅/画风/角色一致性机制/BGM策略/要不要做跨场景首尾帧衔接——`SKILL.md` 开头的风格速查表 + `references/style_playbooks.md` 覆盖了六种已验证风格(时事锐评、AI女团MV、IP吉祥物二创、AI建筑、AI漫剧、AI女友)的具体取值。
+**风格适配**:阶段1-5的骨架对任何风格通用,真正因风格而变的是画幅/画风/角色一致性机制/BGM策略/要不要做跨场景首尾帧衔接——`SKILL.md` 开头的风格速查表 + `references/style_playbooks.md` 覆盖了已验证风格(时事锐评、AI女团MV、IP吉祥物二创、AI建筑、AI漫剧、AI女友、宠物喜剧二创)的具体取值,新风格产出后按同样格式追加。
 
 **场景视频生成四种调度模式怎么选**(阶段3是这条流水线里最容易踩坑的地方,细节和判断依据都在 `SKILL.md` 阶段3):
 
@@ -73,7 +73,7 @@ COMFYUI_WORKER_PORTS=8189,8190,8191,8192,8193,8194,8195
 
 ## 详细文档
 
-所有实测踩过的坑、参数取值依据、模型清单都在 [`SKILL.md`](./SKILL.md) 里——尤其是阶段3(GPU 集群,含8端口调度模式、跨场景一镜到底衔接、延时摄影的真实结论)和阶段6(HyperFrames)开头都写了"动手之前把这一整节看完",不是虚话,跳过直接踩坑的成本远高于读一遍的成本。六种风格各自的具体做法(角色一致性机制选哪种、BGM从哪来、要不要做首尾帧衔接)在 [`references/style_playbooks.md`](./references/style_playbooks.md) 里按风格分节写清楚了。角色圣经(`character_bible.py`)完整 schema 见 [`references/character_bible.schema.md`](./references/character_bible.schema.md)。
+所有实测踩过的坑、参数取值依据、模型清单都在 [`SKILL.md`](./SKILL.md) 里——尤其是阶段3(GPU 集群,含8端口调度模式、跨场景一镜到底衔接、延时摄影的真实结论)和阶段6(HyperFrames)开头都写了"动手之前把这一整节看完",不是虚话,跳过直接踩坑的成本远高于读一遍的成本。各已验证风格的具体做法(角色一致性机制选哪种、BGM从哪来、要不要做首尾帧衔接)在 [`references/style_playbooks.md`](./references/style_playbooks.md) 里按风格分节写清楚了。角色圣经(`character_bible.py`)完整 schema 见 [`references/character_bible.schema.md`](./references/character_bible.schema.md)。
 
 ## 目录结构
 
@@ -82,7 +82,7 @@ SKILL.md                          # 完整流程文档,Claude Code 的行为契�
 README.md                         # 本文件:安装+快速上手
 .env.example                      # 环境变量模板
 references/
-  style_playbooks.md              # 六种已验证风格的具体做法(角色一致性/BGM/场景衔接/端口调度)
+  style_playbooks.md              # 各已验证风格的具体做法(角色一致性/BGM/场景衔接/端口调度)
   character_bible.schema.md       # 固定IP角色一致性机制的完整 schema
 scripts/
   config.py                       # 从 .env 读配置,所有脚本共用
@@ -94,6 +94,7 @@ scripts/
   gen_tts.py                      # TTS(edge-tts 默认 / newapi 可选),字级时间戳
   gen_tts_multivoice.py           # TTS:按角色分配不同音色(多角色对话剧用)
   gen_tts_fishaudio.py            # TTS:接入 Fish Audio 克隆音色
+  gen_tts_elevenlabs.py           # TTS:接入 ElevenLabs(更自然但付费)
   gen_srt.py                      # 生成字幕SRT
   gen_bilingual_srt.py            # 生成双语字幕SRT(原文+译文双行)
   gen_images.py                   # 阶段2:首帧图生成(gpt-image-2 主力 + Z-Image Turbo 兜底)
