@@ -1,10 +1,27 @@
 # AI Video Remix
 
-一个 [Claude Code](https://claude.com/claude-code) skill:把 (a) 一个想要二创/逆向还原的现有视频,或 (b) 一份想要原创改写的素材/需求,端到端做成一条装配好的竖屏(9:16)或横屏(16:9)AI 视频——文案+SRT提取、分镜提示词设计、首帧图生成、多场景 ComfyUI MiniMax-H3 集群视频生成、精确时间线装配,最终在 PalmierPro 里完成。
+一个跨 [Claude Code](https://claude.com/claude-code) / Codex CLI 的 agent skill:把 (a) 一个想要二创/逆向还原的现有视频,或 (b) 一份想要原创改写的素材/需求,端到端做成一条装配好的竖屏(9:16)或横屏(16:9)AI 视频——文案+SRT提取、分镜提示词设计、首帧图生成、多场景 ComfyUI MiniMax-H3 集群视频生成、精确时间线装配,最终在 PalmierPro 里完成。
 
 **风格无关**:同一套骨架已经在多种不同风格的真实生产上跑通过——时事财经历史锐评(厚涂油画单主体)、AI女团MV(真实歌曲驱动口型同步)、IP吉祥物二创(角色自动核验)、纪录片式建造改造(全片一镜到底)、插画/YA剧情连载、恋爱人设短剧、宠物喜剧二创。拿到一个新风格的需求,先看 `SKILL.md` 开头的"风格速查表"对号入座,再看 `references/style_playbooks.md` 里对应那一节的具体做法——不需要从零摸索。
 
-在 Claude Code 里说"remix这个视频"、"把这段文案做成视频"、"照我们XX那套流程做个视频"之类的话,这个 skill 会自动触发。
+在 Claude Code 或 Codex CLI 里说"remix这个视频"、"把这段文案做成视频"、"照我们XX那套流程做个视频"之类的话,这个 skill 会自动触发。
+
+> **只是日常提需求、不负责搭环境?** 看 [`使用指南.md`](./使用指南.md) 就够了,不用往下读这份技术安装文档。
+
+---
+
+## 目录
+
+- [安装](#安装开箱即用)
+- [Codex CLI 兼容](#codex-cli-兼容)
+- [前置依赖](#前置依赖)
+- [配置](#配置)
+- [用法](#用法)
+- [流程总览](#流程总览)
+- [详细文档](#详细文档)
+- [目录结构](#目录结构)
+
+---
 
 ## 安装(开箱即用)
 
@@ -16,14 +33,47 @@ git clone https://github.com/lumos-tiamo/ai-video-remix.git .claude/skills/ai-vi
 
 Claude Code 会自动发现这个目录下的 `SKILL.md` 并注册这个 skill,不需要额外配置。
 
+---
+
+## Codex CLI 兼容
+
+这个 skill 同时在 **Claude Code** 和 **Codex CLI** 下有效,不需要维护两份内容——两边认的是同一份 `SKILL.md` 格式(开放 agent skills 标准),只是项目级 skill 的扫描目录不一样:
+
+| | Claude Code | Codex CLI |
+|---|---|---|
+| 扫描目录 | `.claude/skills/` | `.agents/skills/`(从当前目录向上扫到仓库根) |
+| 显式调用 | `/skill-name` | `/skills` 或 `$skill-name` |
+| 自然语言自动触发 | 支持 | 支持,机制相同 |
+
+同事只用 Claude Code:上面"安装"那步做完就够了,不用管这一节。
+
+**同事用 Codex CLI**:Codex 官方支持 symlink 并会跟随其指向的目标,所以不用再克隆一份、也不用维护两份内容,建一个软链接指过去就行(在你项目根目录执行):
+
+```bash
+mkdir -p .agents/skills
+ln -s ../../.claude/skills/ai-video-remix .agents/skills/ai-video-remix
+```
+
+两个目录读的是完全同一份文件,改一处两边同时生效。除此之外,Codex 用户还要单独做一件事——**给 Palmier-Pro 的 MCP 连接**:这是每个人自己电脑上 `~/.codex/config.toml`(或项目级 `.codex/config.toml`)里的配置,跟 Claude Code 的 MCP 设置是两套独立的东西,不会因为克隆/软链接这个仓库而自动带过去,具体注册命令找负责 Palmier-Pro 接入的同事要(取决于服务端暴露的是 stdio 还是 HTTP,`codex mcp add` 的参数不一样)。除了这两件事,`.env`/ComfyUI集群/网关key 这些环境配置对两边客户端完全通用,不用重复配置。
+
+---
+
 ## 前置依赖
 
-- **Claude Code**,已连接一个支持 MCP 的视频剪辑工具(这套流程默认用 `palmier-pro`)
-- **Python 3** + `pip install edge-tts`(默认免费 TTS 后端)
-- **FFmpeg**(拼接、抽帧、转码都要用到)
+**软件/工具(自己装):**
+
+- **git**(克隆这个仓库,仅安装时用一次)
+- **Claude Code 或 Codex CLI**,已连接一个支持 MCP 的视频剪辑工具(这套流程默认用 `palmier-pro`——这是独立于本仓库的另一套 MCP 连接配置,Claude Code 和 Codex 两边要分别配一次,不在这份文档范围内,找负责的同事要接入方式)
+- **Python 3** + `pip install edge-tts`(默认免费 TTS 后端)+ `pip install Pillow`(生成发布封面图 `make_cover.py` 用)
+- **FFmpeg + ffprobe**(拼接、抽帧、转码、字幕切变检测都要用到)
+- 可选,仅阶段6(HyperFrames)或 newapi 配音时补字级时间戳用到:**Node ≥22**、**Chrome**(`npx hyperframes doctor` 检查)
+
+**共享基础设施(找管理员要访问权限,不是自己装):**
+
 - 一个可访问的 **共享 ComfyUI 集群**,部署了 [ComfyUI-Distributed](https://github.com/robertvoy/ComfyUI-Distributed) 插件 + MiniMax H3 视频模型(master + 若干 worker 端口)
-- 一个兼容 OpenAI 接口的网关 key(文案/生图用,项目里默认接的是 `newapi.elevatesphere.com`,换成你自己的网关也可以,脚本不写死具体服务商)
-- 可选,仅阶段6用到:Node ≥22、Chrome(`npx hyperframes doctor` 检查)
+- 一个兼容 OpenAI 接口的网关 key(文案/生图用,项目里默认接的是 `newapi.elevatesphere.com`,换成你自己的网关也可以,脚本不写死具体服务商)——团队共用账号找管理员要一份自己的,不要共用同一个 key
+
+---
 
 ## 配置
 
@@ -33,6 +83,8 @@ Claude Code 会自动发现这个目录下的 `SKILL.md` 并注册这个 skill,�
 cp .env.example .env
 ```
 
+**必需变量**(缺一个都跑不起来):
+
 ```
 NEWAPI_KEY=sk-...                  # 你自己的网关 key,团队共用账号找管理员要一份自己的
 NEWAPI_URL=https://newapi.elevatesphere.com
@@ -41,13 +93,29 @@ COMFYUI_MASTER_PORT=8188
 COMFYUI_WORKER_PORTS=8189,8190,8191,8192,8193,8194,8195
 ```
 
+**可选变量**(有默认值,或只有用到对应功能才需要,完整清单+说明见 `.env.example`):
+
+| 变量 | 作用 | 不填会怎样 |
+|---|---|---|
+| `IMAGE_API_KEY` / `IMAGE_API_URL` | 给阶段2首帧图单独指定一个网关 | fallback 到 `NEWAPI_*` |
+| `COMFYUI_MAX_CONCURRENT` | 集群并发上限 | 默认 `3`(保守值,GPU可能被多个端口共享) |
+| `FISHAUDIO_KEY` | 克隆音色 TTS(`gen_tts_fishaudio.py`) | 不用这个后端就不需要 |
+| `ELEVENLABS_KEY` | 更自然的付费 TTS(`gen_tts_elevenlabs.py`) | 不用这个后端就不需要 |
+| `VERIFIER_MODEL` | 角色一致性核验用的判图模型 | 默认 `gemini-2.5-pro` |
+| `MAX_GEN_ATTEMPTS` | 角色核验最多重试几次 | 默认 `3` |
+| `VERIFY_MODE` | 角色核验模式,额度紧张时可设 `off` 应急关闭 | 默认 `critical-only` |
+
 所有脚本都从环境变量读配置(见 `scripts/config.py`,从当前目录向上找 `.env`),没有硬编码的 key/host/端口。**`.env` 已经在 `.gitignore` 里,不要提交,也不要把 key 直接贴进对话里。**
 
-可选:`IMAGE_API_KEY`/`IMAGE_API_URL` 给阶段2首帧图单独指定一个网关,不设置就 fallback 到 `NEWAPI_*`。**排查并发数异常时注意 `.env` 是就近生效的**——如果你在某个具体项目目录下也放了一份 `.env`,它会盖掉 skill 目录这份,曾经因此把8端口集群意外限流到3并发。
+**排查并发数异常/配置好像没生效时,先查 `.env` 是不是被就近覆盖了**——`config.py` 从当前工作目录向上找 `.env`,如果你在某个具体项目目录下也放了一份 `.env`,它会盖掉 skill 目录这份,曾经因此把8端口集群意外限流到3并发。
+
+---
 
 ## 用法
 
-不需要手动跑脚本——直接在 Claude Code 里用自然语言描述需求(比如"把这条视频重新做成海绵宝宝科普风格,60秒左右"),Claude 会按 `SKILL.md` 里的流程自己调度这些脚本、在关键检查点(文案确认、首帧图确认)停下来给你看产出物,其余阶段全自动跑完。
+不需要手动跑脚本——直接在 Claude Code 或 Codex CLI 里用自然语言描述需求(比如"把这条视频重新做成海绵宝宝科普风格,60秒左右"),它会按 `SKILL.md` 里的流程自己调度这些脚本、在关键检查点(文案确认、首帧图确认)停下来给你看产出物,其余阶段全自动跑完。
+
+---
 
 ## 流程总览
 
@@ -71,14 +139,18 @@ COMFYUI_WORKER_PORTS=8189,8190,8191,8192,8193,8194,8195
 
 需要"生成画面按真实歌曲精确对口型"(音乐视频类需求)时,还有 `MiniMaxH3ReferenceToVideo` 这条替代节点路径(多参考图+参考音频,取代默认的 `MiniMaxH3ImageToVideo`),具体见 `references/style_playbooks.md` 的 AI女团MV 一节。
 
+---
+
 ## 详细文档
 
 所有实测踩过的坑、参数取值依据、模型清单都在 [`SKILL.md`](./SKILL.md) 里——尤其是阶段3(GPU 集群,含8端口调度模式、跨场景一镜到底衔接、延时摄影的真实结论)和阶段6(HyperFrames)开头都写了"动手之前把这一整节看完",不是虚话,跳过直接踩坑的成本远高于读一遍的成本。各已验证风格的具体做法(角色一致性机制选哪种、BGM从哪来、要不要做首尾帧衔接)在 [`references/style_playbooks.md`](./references/style_playbooks.md) 里按风格分节写清楚了。角色圣经(`character_bible.py`)完整 schema 见 [`references/character_bible.schema.md`](./references/character_bible.schema.md)。
 
+---
+
 ## 目录结构
 
 ```
-SKILL.md                          # 完整流程文档,Claude Code 的行为契约
+SKILL.md                          # 完整流程文档,Claude Code / Codex 的行为契约
 README.md                         # 本文件:安装+快速上手
 .env.example                      # 环境变量模板
 references/
